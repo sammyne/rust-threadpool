@@ -78,13 +78,22 @@
 //! assert_eq!(an_atomic.load(Ordering::SeqCst), /* n_jobs = */ 23);
 //! ```
 
-extern crate num_cpus;
+#![no_std]
+
+#[macro_use]
+extern crate sgx_tstd as std;
+use std::prelude::v1::*;
+
+//extern crate num_cpus;
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex};
+//use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, SgxCondvar as Condvar, SgxMutex as Mutex};
 use std::thread;
+
+pub const NUM_CPUS: usize = 1;
 
 trait FnBox {
     fn call_box(self: Box<Self>);
@@ -260,10 +269,10 @@ impl Builder {
     ///     })
     /// }
     /// ```
-    pub fn thread_stack_size(mut self, size: usize) -> Builder {
-        self.thread_stack_size = Some(size);
-        self
-    }
+    // pub fn thread_stack_size(mut self, size: usize) -> Builder {
+    //     self.thread_stack_size = Some(size);
+    //     self
+    // }
 
     /// Finalize the [`Builder`] and build the [`ThreadPool`].
     ///
@@ -281,7 +290,8 @@ impl Builder {
     pub fn build(self) -> ThreadPool {
         let (tx, rx) = channel::<Thunk<'static>>();
 
-        let num_threads = self.num_threads.unwrap_or_else(num_cpus::get);
+        //let num_threads = self.num_threads.unwrap_or_else(num_cpus::get);
+        let num_threads = self.num_threads.unwrap_or_else(|| NUM_CPUS);
 
         let shared_data = Arc::new(ThreadPoolSharedData {
             name: self.thread_name,
@@ -293,7 +303,7 @@ impl Builder {
             active_count: AtomicUsize::new(0),
             max_thread_count: AtomicUsize::new(num_threads),
             panic_count: AtomicUsize::new(0),
-            stack_size: self.thread_stack_size,
+            //stack_size: self.thread_stack_size,
         });
 
         // Threadpool threads
@@ -318,7 +328,7 @@ struct ThreadPoolSharedData {
     active_count: AtomicUsize,
     max_thread_count: AtomicUsize,
     panic_count: AtomicUsize,
-    stack_size: Option<usize>,
+    //stack_size: Option<usize>,
 }
 
 impl ThreadPoolSharedData {
@@ -686,7 +696,8 @@ impl Clone for ThreadPool {
 /// this will create one thread per hyperthread.
 impl Default for ThreadPool {
     fn default() -> Self {
-        ThreadPool::new(num_cpus::get())
+        //ThreadPool::new(num_cpus::get())
+        ThreadPool::new(NUM_CPUS)
     }
 }
 
@@ -732,9 +743,12 @@ fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>) {
     if let Some(ref name) = shared_data.name {
         builder = builder.name(name.clone());
     }
-    if let Some(ref stack_size) = shared_data.stack_size {
-        builder = builder.stack_size(stack_size.to_owned());
-    }
+    // Yu Ding:
+    // Specifying stack size for SGX thread is meaningless
+    // Commented out
+    // if let Some(ref stack_size) = shared_data.stack_size {
+    //     builder = builder.stack_size(stack_size.to_owned());
+    // }
     builder
         .spawn(move || {
             // Will spawn a new thread on panic unless it is cancelled.
@@ -777,8 +791,46 @@ fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>) {
         .unwrap();
 }
 
-#[cfg(test)]
-mod test {
+//#[cfg(test)]
+//mod test {
+#[cfg(feature = "testing")]
+pub mod tests {
+    use std::prelude::v1::*;
+
+    use testings::*;
+
+    // @dev TEST_TASKS should be smaller than TCSNum in enclave.config.xml
+    // @dev HeapMaxSize should be large enough
+    pub fn do_rsgx_tests() -> usize {
+        run_tests!(
+            test_active_count,
+            test_clone,
+            test_cloned_eq,
+            test_debug,
+            test_empty_pool,
+            test_join_wavesurfer,
+            test_massive_task_creation,
+            test_multi_join,
+            test_name,
+            test_no_fun_or_joy,
+            test_recovery_from_subtask_panic,
+            test_repeate_join,
+            test_send,
+            test_send_shared_data,
+            test_set_num_threads_decreasing,
+            test_set_num_threads_increasing,
+            test_shrink,
+            test_should_not_panic_on_drop_if_subtasks_panic_after_drop,
+            test_sync_shared_data,
+            test_works,
+            should_panic_test_zero_tasks_panic
+        )
+    }
+
+    fn should_panic_test_zero_tasks_panic() {
+        should_panic!(test_zero_tasks_panic());
+    }
+
     use super::{Builder, ThreadPool};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::{channel, sync_channel};
@@ -788,7 +840,7 @@ mod test {
 
     const TEST_TASKS: usize = 4;
 
-    #[test]
+    //#[test]
     fn test_set_num_threads_increasing() {
         let new_thread_amount = TEST_TASKS + 8;
         let mut pool = ThreadPool::new(TEST_TASKS);
@@ -809,7 +861,7 @@ mod test {
         pool.join();
     }
 
-    #[test]
+    //#[test]
     fn test_set_num_threads_decreasing() {
         let new_thread_amount = 2;
         let mut pool = ThreadPool::new(TEST_TASKS);
@@ -828,7 +880,7 @@ mod test {
         pool.join();
     }
 
-    #[test]
+    //#[test]
     fn test_active_count() {
         let pool = ThreadPool::new(TEST_TASKS);
         for _ in 0..2 * TEST_TASKS {
@@ -843,7 +895,7 @@ mod test {
         assert_eq!(initialized_count, TEST_TASKS);
     }
 
-    #[test]
+    //#[test]
     fn test_works() {
         let pool = ThreadPool::new(TEST_TASKS);
 
@@ -858,13 +910,13 @@ mod test {
         assert_eq!(rx.iter().take(TEST_TASKS).fold(0, |a, b| a + b), TEST_TASKS);
     }
 
-    #[test]
-    #[should_panic]
+    //#[test]
+    //#[should_panic]
     fn test_zero_tasks_panic() {
         ThreadPool::new(0);
     }
 
-    #[test]
+    //#[test]
     fn test_recovery_from_subtask_panic() {
         let pool = ThreadPool::new(TEST_TASKS);
 
@@ -888,7 +940,7 @@ mod test {
         assert_eq!(rx.iter().take(TEST_TASKS).fold(0, |a, b| a + b), TEST_TASKS);
     }
 
-    #[test]
+    //#[test]
     fn test_should_not_panic_on_drop_if_subtasks_panic_after_drop() {
         let pool = ThreadPool::new(TEST_TASKS);
         let waiter = Arc::new(Barrier::new(TEST_TASKS + 1));
@@ -908,7 +960,7 @@ mod test {
         waiter.wait();
     }
 
-    #[test]
+    //#[test]
     fn test_massive_task_creation() {
         let test_tasks = 4_200_000;
 
@@ -949,7 +1001,7 @@ mod test {
         );
     }
 
-    #[test]
+    //#[test]
     fn test_shrink() {
         let test_tasks_begin = TEST_TASKS + 2;
 
@@ -987,7 +1039,7 @@ mod test {
         b3.wait();
     }
 
-    #[test]
+    //#[test]
     fn test_name() {
         let name = "test";
         let mut pool = ThreadPool::with_name(name.to_owned(), 2);
@@ -1022,7 +1074,7 @@ mod test {
         }
     }
 
-    #[test]
+    //#[test]
     fn test_debug() {
         let pool = ThreadPool::new(4);
         let debug = format!("{:?}", pool);
@@ -1048,7 +1100,7 @@ mod test {
         );
     }
 
-    #[test]
+    //#[test]
     fn test_repeate_join() {
         let pool = ThreadPool::with_name("repeate join test".into(), 8);
         let test_count = Arc::new(AtomicUsize::new(0));
@@ -1076,7 +1128,7 @@ mod test {
         assert_eq!(84, test_count.load(Ordering::Relaxed));
     }
 
-    #[test]
+    //#[test]
     fn test_multi_join() {
         use std::sync::mpsc::TryRecvError::*;
 
@@ -1120,7 +1172,7 @@ mod test {
         );
     }
 
-    #[test]
+    //#[test]
     fn test_empty_pool() {
         // Joining an empty pool must return imminently
         let pool = ThreadPool::new(4);
@@ -1130,7 +1182,7 @@ mod test {
         assert!(true);
     }
 
-    #[test]
+    //#[test]
     fn test_no_fun_or_joy() {
         // What happens when you keep adding jobs after a join
 
@@ -1150,7 +1202,7 @@ mod test {
         pool.join();
     }
 
-    #[test]
+    //#[test]
     fn test_clone() {
         let pool = ThreadPool::with_name("clone example".into(), 2);
 
@@ -1211,32 +1263,32 @@ mod test {
         );
     }
 
-    #[test]
+    //#[test]
     fn test_sync_shared_data() {
         fn assert_sync<T: Sync>() {}
         assert_sync::<super::ThreadPoolSharedData>();
     }
 
-    #[test]
+    //#[test]
     fn test_send_shared_data() {
         fn assert_send<T: Send>() {}
         assert_send::<super::ThreadPoolSharedData>();
     }
 
-    #[test]
+    //#[test]
     fn test_send() {
         fn assert_send<T: Send>() {}
         assert_send::<ThreadPool>();
     }
 
-    #[test]
+    //#[test]
     fn test_cloned_eq() {
         let a = ThreadPool::new(2);
 
         assert_eq!(a, a.clone());
     }
 
-    #[test]
+    //#[test]
     /// The scenario is joining threads should not be stuck once their wave
     /// of joins has completed. So once one thread joining on a pool has
     /// succeded other threads joining on the same pool must get out even if
