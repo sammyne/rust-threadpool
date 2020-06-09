@@ -78,13 +78,19 @@
 //! assert_eq!(an_atomic.load(Ordering::SeqCst), /* n_jobs = */ 23);
 //! ```
 
-extern crate num_cpus;
+#![no_std]
+
+#[macro_use]
+extern crate sgx_tstd as std;
+use std::prelude::v1::*;
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, SgxCondvar as Condvar, SgxMutex as Mutex};
 use std::thread;
+
+pub const NUM_CPUS: usize = 1;
 
 trait FnBox {
     fn call_box(self: Box<Self>);
@@ -96,7 +102,7 @@ impl<F: FnOnce()> FnBox for F {
     }
 }
 
-type Thunk<'a> = Box<FnBox + Send + 'a>;
+type Thunk<'a> = Box<dyn FnBox + Send + 'a>;
 
 struct Sentinel<'a> {
     shared_data: &'a Arc<ThreadPoolSharedData>,
@@ -260,10 +266,10 @@ impl Builder {
     ///     })
     /// }
     /// ```
-    pub fn thread_stack_size(mut self, size: usize) -> Builder {
-        self.thread_stack_size = Some(size);
-        self
-    }
+    /// pub fn thread_stack_size(mut self, size: usize) -> Builder {
+    ///     self.thread_stack_size = Some(size);
+    ///     self
+    /// }
 
     /// Finalize the [`Builder`] and build the [`ThreadPool`].
     ///
@@ -281,7 +287,7 @@ impl Builder {
     pub fn build(self) -> ThreadPool {
         let (tx, rx) = channel::<Thunk<'static>>();
 
-        let num_threads = self.num_threads.unwrap_or_else(num_cpus::get);
+        let num_threads = self.num_threads.unwrap_or_else(|| NUM_CPUS);
 
         let shared_data = Arc::new(ThreadPoolSharedData {
             name: self.thread_name,
@@ -293,7 +299,7 @@ impl Builder {
             active_count: AtomicUsize::new(0),
             max_thread_count: AtomicUsize::new(num_threads),
             panic_count: AtomicUsize::new(0),
-            stack_size: self.thread_stack_size,
+            // stack_size: self.thread_stack_size,
         });
 
         // Threadpool threads
@@ -318,7 +324,7 @@ struct ThreadPoolSharedData {
     active_count: AtomicUsize,
     max_thread_count: AtomicUsize,
     panic_count: AtomicUsize,
-    stack_size: Option<usize>,
+    // stack_size: Option<usize>,
 }
 
 impl ThreadPoolSharedData {
@@ -686,7 +692,7 @@ impl Clone for ThreadPool {
 /// this will create one thread per hyperthread.
 impl Default for ThreadPool {
     fn default() -> Self {
-        ThreadPool::new(num_cpus::get())
+        ThreadPool::new(NUM_CPUS)
     }
 }
 
@@ -732,9 +738,12 @@ fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>) {
     if let Some(ref name) = shared_data.name {
         builder = builder.name(name.clone());
     }
-    if let Some(ref stack_size) = shared_data.stack_size {
-        builder = builder.stack_size(stack_size.to_owned());
-    }
+    // Yu Ding:
+    // Specifying stack size for SGX thread is meaningless
+    // Commented out
+    // if let Some(ref stack_size) = shared_data.stack_size {
+    //     builder = builder.stack_size(stack_size.to_owned());
+    // }
     builder
         .spawn(move || {
             // Will spawn a new thread on panic unless it is cancelled.
@@ -777,8 +786,16 @@ fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>) {
         .unwrap();
 }
 
-#[cfg(test)]
-mod test {
+//#[cfg(test)]
+//mod test {
+#[cfg(feature = "with-testing")]
+pub mod tests {
+    use std::prelude::v1::*;
+
+    use testing::{generate_runner, test};
+
+    generate_runner!();
+
     use super::{Builder, ThreadPool};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::{channel, sync_channel};
